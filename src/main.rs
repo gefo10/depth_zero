@@ -1,10 +1,15 @@
+mod character_controller;
+mod movement;
+
 use avian2d::prelude::*;
 use bevy::prelude::*;
+use movement::accelerate_bodies;
 
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
         .add_systems(Startup, (setup_camera, setup_test_floor, setup_test))
+        .add_systems(Update, accelerate_bodies)
         .run();
 }
 
@@ -27,6 +32,7 @@ fn setup_test_floor(mut commands: Commands) {
 fn setup_test(mut commands: Commands) {
     commands.spawn((
         RigidBody::Dynamic,
+        LinearVelocity::default(),
         Collider::rectangle(20.0, 60.0),
         Transform::from_xyz(0.0, 3.0, 0.0),
         Sprite {
