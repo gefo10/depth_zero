@@ -42,9 +42,9 @@ fn setup_test(mut commands: Commands) {
             ..default()
         },
         CharacterControllerBundle::new(Collider::capsule(10.0, 60.0)).with_movement(
-            240.0,
-            0.98,
-            40.0,
+            350.0,
+            0.01,
+            150.0,
             (30.0 as Scalar).to_radians(),
         ),
         Friction::ZERO.with_combine_rule(CoefficientCombine::Min),

@@ -8,6 +8,7 @@ impl Plugin for CharacterControllerPlugin {
         app.add_message::<MovementAction>().add_systems(
             Update,
             (
+                reset_is_moving,
                 keyboard_input,
                 gamepad_input,
                 update_grounded,
@@ -24,6 +25,9 @@ pub enum MovementAction {
     Move(Vector2),
     Jump,
 }
+
+#[derive(Component)]
+pub struct IsMoving(bool);
 
 #[derive(Component)]
 pub struct CharacterController;
@@ -54,8 +58,8 @@ pub struct CharacterControllerBundle {
     character_controller: CharacterController,
     body: RigidBody,
     collider: Collider,
-    ground_caster: ShapeCaster, // TODO: check what this is for
-    locked_axes: LockedAxes,    //TODO: check what this is for
+    ground_caster: ShapeCaster,
+    locked_axes: LockedAxes, //TODO: check what this is for
     movement: MovementBundle,
 }
 
@@ -66,6 +70,7 @@ pub struct MovementBundle {
     damping: MovementDampingFactor,
     jump_impulse: JumpImpulse,
     max_slope_angle: MaxSlopeAngle,
+    is_moving: IsMoving,
 }
 
 impl MovementBundle {
@@ -80,6 +85,7 @@ impl MovementBundle {
             damping: MovementDampingFactor(damping),
             jump_impulse: JumpImpulse(jump_impulse),
             max_slope_angle: MaxSlopeAngle(max_slope_angle),
+            is_moving: IsMoving(false),
         }
     }
 }
@@ -204,6 +210,7 @@ fn movement(
         &JumpImpulse,
         &mut LinearVelocity,
         Has<Grounded>,
+        &mut IsMoving,
     )>,
 ) {
     // Precision is adjusted so that the example works with
@@ -211,11 +218,12 @@ fn movement(
     let delta_time = time.delta_secs_f64().adjust_precision();
 
     for event in movement_reader.read() {
-        for (movement_acceleration, jump_impulse, mut linear_velocity, is_grouded) in
+        for (movement_acceleration, jump_impulse, mut linear_velocity, is_grouded, mut is_moving) in
             &mut controllers
         {
             match event {
                 MovementAction::Move(direction) => {
+                    is_moving.0 = true;
                     linear_velocity.x += direction.x * movement_acceleration.0 * delta_time;
                 }
                 MovementAction::Jump => {
@@ -232,11 +240,19 @@ fn movement(
 /// Slows down movement in the X plane.
 fn apply_movement_damping(
     time: Res<Time>,
-    mut query: Query<(&MovementDampingFactor, &mut LinearVelocity)>,
+    mut query: Query<(&MovementDampingFactor, &mut LinearVelocity, &IsMoving)>,
 ) {
-    for (damping_factor, mut linear_velocity) in &mut query {
-        linear_velocity.x *= damping_factor
-            .0
-            .powf(time.delta_secs_f64().adjust_precision());
+    for (damping_factor, mut linear_velocity, is_moving) in &mut query {
+        if !is_moving.0 {
+            linear_velocity.x *= damping_factor
+                .0
+                .powf(time.delta_secs_f64().adjust_precision());
+        }
+    }
+}
+
+fn reset_is_moving(mut query: Query<&mut IsMoving>) {
+    for mut is_moving in &mut query {
+        is_moving.0 = false;
     }
 }
