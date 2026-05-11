@@ -1,15 +1,19 @@
 mod character_controller;
-mod movement;
 
-use avian2d::prelude::*;
+use avian2d::{math::*, prelude::*};
 use bevy::prelude::*;
-use movement::accelerate_bodies;
+use character_controller::*;
+
+use crate::character_controller::CharacterControllerPlugin;
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
+        .add_plugins((
+            DefaultPlugins,
+            PhysicsPlugins::default(),
+            CharacterControllerPlugin,
+        ))
         .add_systems(Startup, (setup_camera, setup_test_floor, setup_test))
-        .add_systems(Update, accelerate_bodies)
         .run();
 }
 
@@ -31,14 +35,20 @@ fn setup_test_floor(mut commands: Commands) {
 }
 fn setup_test(mut commands: Commands) {
     commands.spawn((
-        RigidBody::Dynamic,
-        LinearVelocity::default(),
-        Collider::rectangle(20.0, 60.0),
         Transform::from_xyz(0.0, 3.0, 0.0),
         Sprite {
             color: Color::WHITE,
             custom_size: Some(Vec2::new(20.0, 60.0)),
             ..default()
         },
+        CharacterControllerBundle::new(Collider::capsule(0.4, 1.0)).with_movement(
+            30.0,
+            0.92,
+            7.0,
+            (30.0 as Scalar).to_radians(),
+        ),
+        Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
+        Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
+        GravityScale(2.0),
     ));
 }

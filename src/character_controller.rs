@@ -5,7 +5,17 @@ pub struct CharacterControllerPlugin;
 
 impl Plugin for CharacterControllerPlugin {
     fn build(&self, app: &mut App) {
-        //TODO
+        app.add_message::<MovementAction>().add_systems(
+            Update,
+            (
+                keyboard_input,
+                gamepad_input,
+                update_grounded,
+                movement,
+                apply_movement_damping,
+            )
+                .chain(),
+        );
     }
 }
 
@@ -109,6 +119,7 @@ impl CharacterControllerBundle {
     }
 }
 
+/// Sends [`MovementAction`] events based on keyboard input.
 fn keyboard_input(
     mut movement_writer: MessageWriter<MovementAction>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
@@ -129,5 +140,91 @@ fn keyboard_input(
 
     if keyboard_input.just_pressed(KeyCode::Space) {
         movement_writer.write(MovementAction::Jump);
+    }
+}
+
+/// Sends [`MovementAction`] events based on gamepad input.
+fn gamepad_input(mut movement_writer: MessageWriter<MovementAction>, gamepads: Query<&Gamepad>) {
+    for gamepad in gamepads.iter() {
+        if let (Some(x), Some(y)) = (
+            gamepad.get(GamepadAxis::LeftStickX),
+            gamepad.get(GamepadAxis::LeftStickY),
+        ) {
+            movement_writer.write(MovementAction::Move(
+                Vector2::new(x as Scalar, y as Scalar).clamp_length_max(1.0),
+            ));
+        }
+
+        if gamepad.just_pressed(GamepadButton::South) {
+            movement_writer.write(MovementAction::Jump);
+        }
+    }
+}
+
+/// Updates the ['Grounded'] status for character controller
+fn update_grounded(
+    mut commands: Commands,
+    mut query: Query<
+        (Entity, &ShapeHits, &Rotation, Option<&MaxSlopeAngle>),
+        With<CharacterController>,
+    >,
+) {
+    for (entity, hits, rotation, max_slope_angle) in &mut query {
+        // The character is grounded if the shape caster has a hit with a normal
+        // that isn't to steep
+        let is_grounded = hits.iter().any(|hit| {
+            if let Some(angle) = max_slope_angle {
+                (rotation * -hit.normal2).angle_between(Vector::Y).abs() <= angle.0
+            } else {
+                true
+            }
+        });
+
+        if is_grounded {
+            commands.entity(entity).insert(Grounded);
+        } else {
+            commands.entity(entity).remove::<Grounded>();
+        }
+    }
+}
+
+/// Responds to [`MovementAction`] events and moves character controllers accordingly.
+fn movement(
+    time: Res<Time>,
+    mut movement_reader: MessageReader<MovementAction>,
+    mut controllers: Query<(
+        &MovementAcceleration,
+        &JumpImpulse,
+        &mut LinearVelocity,
+        Has<Grounded>,
+    )>,
+) {
+    // Precision is adjusted so that the example works with
+    // both the f32 and f64 features.
+    let delta_time = time.delta_secs_f64().adjust_precision();
+
+    for event in movement_reader.read() {
+        for (movement_acceleration, jump_impulse, mut linear_velocity, is_grouded) in
+            &mut controllers
+        {
+            match event {
+                MovementAction::Move(direction) => {
+                    linear_velocity.x += direction.x * movement_acceleration.0 * delta_time;
+                    linear_velocity.y += direction.y * movement_acceleration.0 * delta_time;
+                }
+                MovementAction::Jump => {
+                    if is_grouded {
+                        linear_velocity.y = jump_impulse.0;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Slows down movement in the X plane.
+fn apply_movement_damping(mut query: Query<(&MovementDampingFactor, &mut LinearVelocity)>) {
+    for (damping_factor, mut linear_velocity) in &mut query {
+        linear_velocity.x *= damping_factor.0;
     }
 }
