@@ -41,14 +41,14 @@ fn setup_test(mut commands: Commands) {
             custom_size: Some(Vec2::new(20.0, 60.0)),
             ..default()
         },
-        CharacterControllerBundle::new(Collider::capsule(0.4, 1.0)).with_movement(
-            30.0,
-            0.92,
-            7.0,
+        CharacterControllerBundle::new(Collider::capsule(10.0, 60.0)).with_movement(
+            240.0,
+            0.98,
+            40.0,
             (30.0 as Scalar).to_radians(),
         ),
         Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
         Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
-        GravityScale(2.0),
+        GravityScale(9.8),
     ));
 }

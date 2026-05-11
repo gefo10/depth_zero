@@ -96,12 +96,19 @@ impl CharacterControllerBundle {
         let mut caster_shape = collider.clone();
         caster_shape.set_scale(Vector::ONE * 0.99, 10);
 
+        let aabb = caster_shape.shape().compute_local_aabb();
+        let half_height = aabb.half_extents().y;
         Self {
             character_controller: CharacterController,
             body: RigidBody::Dynamic,
             collider,
-            ground_caster: ShapeCaster::new(caster_shape, Vector::ZERO, 0.0, Dir2::NEG_Y)
-                .with_max_distance(0.2),
+            ground_caster: ShapeCaster::new(
+                caster_shape,
+                Vector::new(0.0, -half_height),
+                0.0,
+                Dir2::NEG_Y,
+            )
+            .with_max_distance(0.2),
             locked_axes: LockedAxes::ROTATION_LOCKED,
             movement: MovementBundle::default(),
         }
@@ -210,9 +217,9 @@ fn movement(
             match event {
                 MovementAction::Move(direction) => {
                     linear_velocity.x += direction.x * movement_acceleration.0 * delta_time;
-                    linear_velocity.y += direction.y * movement_acceleration.0 * delta_time;
                 }
                 MovementAction::Jump => {
+                    println!("jump pressed, grounded: {}", is_grouded);
                     if is_grouded {
                         linear_velocity.y = jump_impulse.0;
                     }
@@ -223,8 +230,13 @@ fn movement(
 }
 
 /// Slows down movement in the X plane.
-fn apply_movement_damping(mut query: Query<(&MovementDampingFactor, &mut LinearVelocity)>) {
+fn apply_movement_damping(
+    time: Res<Time>,
+    mut query: Query<(&MovementDampingFactor, &mut LinearVelocity)>,
+) {
     for (damping_factor, mut linear_velocity) in &mut query {
-        linear_velocity.x *= damping_factor.0;
+        linear_velocity.x *= damping_factor
+            .0
+            .powf(time.delta_secs_f64().adjust_precision());
     }
 }
