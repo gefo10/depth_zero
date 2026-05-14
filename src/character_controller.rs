@@ -101,7 +101,7 @@ impl MovementBundle {
             jump_impulse: JumpImpulse(jump_impulse),
             max_slope_angle: MaxSlopeAngle(max_slope_angle),
             is_moving: IsMoving(false),
-            is_grounded: IsGrounded(true),
+            is_grounded: IsGrounded(false),
         }
     }
 }
@@ -154,7 +154,8 @@ fn setup_casters(
                     0.0,
                     Dir2::NEG_Y,
                 )
-                .with_max_distance(0.2),
+                .with_max_distance(0.2)
+                .with_query_filter(SpatialQueryFilter::default().with_excluded_entities([entity])),
                 GroundCaster,
                 Transform::default(),
             ));
@@ -167,7 +168,8 @@ fn setup_casters(
                     0.0,
                     Dir2::NEG_X,
                 )
-                .with_max_distance(0.2),
+                .with_max_distance(0.2)
+                .with_query_filter(SpatialQueryFilter::default().with_excluded_entities([entity])),
                 WallCasterLeft,
                 Transform::default(),
             ));
@@ -180,7 +182,8 @@ fn setup_casters(
                     0.0,
                     Dir2::X,
                 )
-                .with_max_distance(0.2),
+                .with_max_distance(0.2)
+                .with_query_filter(SpatialQueryFilter::default().with_excluded_entities([entity])),
                 WallCasterRight,
                 Transform::default(),
             ));
@@ -244,7 +247,7 @@ fn update_grounded(
             };
             hits.iter().any(|hit| {
                 if let Some(angle) = max_slope_angle {
-                    (rotation * hit.normal2).angle_to(Vector::Y).abs() <= angle.0
+                    (rotation * hit.normal1).angle_to(Vector::Y).abs() <= angle.0
                 } else {
                     true
                 }
@@ -275,13 +278,15 @@ fn update_wall_contact(
                 continue;
             };
 
-            if left.is_some() && hits.iter().count() > 0 {
-                //touching wall left
+            // normal1 is the separation direction for the caster shape.
+            // Left caster pushing off a wall on the left → normal1 points right (x > 0).
+            // Right caster pushing off a wall on the right → normal1 points left (x < 0).
+            // The 0.5 threshold rejects floors/ceilings (mostly-vertical normals).
+            if left.is_some() && hits.iter().any(|hit| hit.normal1.x > 0.5) {
                 commands.entity(entity).insert(TouchingWall::Left);
             }
 
-            if right.is_some() && hits.iter().count() > 0 {
-                //touching wall right
+            if right.is_some() && hits.iter().any(|hit| hit.normal1.x < -0.5) {
                 commands.entity(entity).insert(TouchingWall::Right);
             }
         }
