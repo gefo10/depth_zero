@@ -1,6 +1,8 @@
 use avian2d::{math::*, prelude::*};
 use bevy::{math::VectorSpace, prelude::*};
 
+const JUMP_BUFFER_TIME: Scalar = 0.12;
+
 pub struct CharacterControllerPlugin;
 
 impl Plugin for CharacterControllerPlugin {
@@ -26,6 +28,7 @@ impl Plugin for CharacterControllerPlugin {
 pub enum MovementAction {
     Move(Vector2),
     Jump,
+    JumpCancel,
 }
 
 #[derive(Component)]
@@ -49,6 +52,9 @@ pub struct MovementDampingFactor(Scalar);
 
 #[derive(Component)]
 pub struct JumpImpulse(Scalar);
+
+#[derive(Component)]
+pub struct JumpBuffer(Scalar);
 
 #[derive(Component)]
 pub struct MaxSlopeAngle(Scalar);
@@ -86,6 +92,7 @@ pub struct MovementBundle {
     max_slope_angle: MaxSlopeAngle,
     is_moving: IsMoving,
     is_grounded: IsGrounded,
+    jump_buffer: JumpBuffer,
 }
 
 impl MovementBundle {
@@ -102,6 +109,7 @@ impl MovementBundle {
             max_slope_angle: MaxSlopeAngle(max_slope_angle),
             is_moving: IsMoving(false),
             is_grounded: IsGrounded(false),
+            jump_buffer: JumpBuffer(0.0),
         }
     }
 }
@@ -208,6 +216,10 @@ fn keyboard_input(
     if keyboard_input.just_pressed(KeyCode::Space) {
         movement_writer.write(MovementAction::Jump);
     }
+
+    if keyboard_input.just_released(KeyCode::Space) {
+        movement_writer.write(MovementAction::JumpCancel);
+    }
 }
 
 fn gamepad_input(mut movement_writer: MessageWriter<MovementAction>, gamepads: Query<&Gamepad>) {
@@ -298,6 +310,7 @@ fn movement(
     mut controllers: Query<(
         &MovementAcceleration,
         &JumpImpulse,
+        &mut JumpBuffer,
         &mut LinearVelocity,
         &IsGrounded,
         &mut IsMoving,
@@ -309,7 +322,8 @@ fn movement(
     for event in movement_reader.read() {
         for (
             movement_acceleration,
-            jump_impulse,
+            _jump_impulse,
+            mut jump_buffer,
             mut linear_velocity,
             is_grounded,
             mut is_moving,
@@ -319,33 +333,46 @@ fn movement(
             match event {
                 MovementAction::Move(direction) => {
                     is_moving.0 = true;
-                    linear_velocity.x += direction.x * movement_acceleration.0 * delta_time;
-
+                    if is_grounded.0 {
+                        linear_velocity.x += direction.x * movement_acceleration.0 * delta_time;
+                    }
                     if !is_grounded.0 && touching_wall.is_some() {
                         linear_velocity.y = linear_velocity.y.max(-50.0);
                     }
                 }
                 MovementAction::Jump => {
-                    println!(
-                        "jump: grounded={} vel_y={:.1} wall={}",
-                        is_grounded.0,
-                        linear_velocity.y,
-                        touching_wall.is_some(),
-                    );
-                    if is_grounded.0 {
-                        linear_velocity.y = jump_impulse.0;
-                    } else if let Some(wall_dir) = touching_wall {
-                        if linear_velocity.y > 0.0 {
-                            return;
-                        }
-                        linear_velocity.y = jump_impulse.0;
-                        linear_velocity.x = match wall_dir {
-                            TouchingWall::Left => jump_impulse.0,
-                            TouchingWall::Right => -jump_impulse.0,
-                        }
+                    jump_buffer.0 = JUMP_BUFFER_TIME;
+                }
+                MovementAction::JumpCancel => {
+                    if linear_velocity.y > 0.0 {
+                        linear_velocity.y *= 0.4;
                     }
                 }
             }
+        }
+    }
+
+    for (_, jump_impulse, mut jump_buffer, mut linear_velocity, is_grounded, _, touching_wall) in
+        &mut controllers
+    {
+        if jump_buffer.0 <= 0.0 {
+            continue;
+        }
+
+        if is_grounded.0 {
+            linear_velocity.y = jump_impulse.0;
+        } else if let Some(wall_dir) = touching_wall {
+            if linear_velocity.y >= 0.0 {
+                continue;
+            }
+            linear_velocity.y = jump_impulse.0;
+            linear_velocity.x = match wall_dir {
+                TouchingWall::Right => -jump_impulse.0,
+                TouchingWall::Left => jump_impulse.0,
+            };
+            jump_buffer.0 = 0.0;
+        } else {
+            jump_buffer.0 = (jump_buffer.0 - delta_time).max(0.0);
         }
     }
 }
