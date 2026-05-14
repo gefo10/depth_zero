@@ -1,5 +1,5 @@
 use avian2d::{math::*, prelude::*};
-use bevy::{math::VectorSpace, prelude::*};
+use bevy::{ecs::entity, math::VectorSpace, prelude::*};
 
 const JUMP_BUFFER_TIME: Scalar = 0.12;
 
@@ -16,6 +16,7 @@ impl Plugin for CharacterControllerPlugin {
                 gamepad_input,
                 update_grounded,
                 update_wall_contact,
+                update_ledge_grab,
                 movement,
                 apply_movement_damping,
             )
@@ -70,9 +71,33 @@ pub struct WallCasterLeft;
 pub struct WallCasterRight;
 
 #[derive(Component)]
-pub enum TouchingWall {
+pub struct LedgeProbeLeft;
+
+#[derive(Component)]
+pub struct LedgeProbeRight;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WallSide {
     Left,
     Right,
+}
+
+impl WallSide {
+    pub fn direction(self) -> Scalar {
+        match self {
+            WallSide::Left => 1.0, //pushing off a left wall sends you right
+            WallSide::Right => -1.0,
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct TouchingWall(pub WallSide);
+
+#[derive(Component)]
+pub struct Hanging {
+    pub side: WallSide,
+    pub lip_world_pos: Vector,
 }
 
 #[derive(Bundle)]
@@ -195,6 +220,39 @@ fn setup_casters(
                 WallCasterRight,
                 Transform::default(),
             ));
+
+            // Left ledge probe — sits above and just past the player's left
+            // edge, casts down looking for the top of a wall below the head.
+            // ignore_origin_penetration so a tall wall (probe inside it) is
+            // correctly seen as "no lip".
+            parent.spawn((
+                ShapeCaster::new(
+                    Collider::rectangle(3.0, 2.0),
+                    Vector::new(-(half_width + 1.0), half_height + 4.0),
+                    0.0,
+                    Dir2::NEG_Y,
+                )
+                .with_max_distance(25.0)
+                .with_ignore_origin_penetration(true)
+                .with_query_filter(SpatialQueryFilter::default().with_excluded_entities([entity])),
+                LedgeProbeLeft,
+                Transform::default(),
+            ));
+
+            // Right ledge probe
+            parent.spawn((
+                ShapeCaster::new(
+                    Collider::rectangle(3.0, 2.0),
+                    Vector::new(half_width + 1.0, half_height + 4.0),
+                    0.0,
+                    Dir2::NEG_Y,
+                )
+                .with_max_distance(25.0)
+                .with_ignore_origin_penetration(true)
+                .with_query_filter(SpatialQueryFilter::default().with_excluded_entities([entity])),
+                LedgeProbeRight,
+                Transform::default(),
+            ));
         });
     }
 }
@@ -295,15 +353,69 @@ fn update_wall_contact(
             // Right caster pushing off a wall on the right → normal1 points left (x < 0).
             // The 0.5 threshold rejects floors/ceilings (mostly-vertical normals).
             if left.is_some() && hits.iter().any(|hit| hit.normal1.x > 0.5) {
-                commands.entity(entity).insert(TouchingWall::Left);
+                commands.entity(entity).insert(TouchingWall(WallSide::Left));
             }
 
             if right.is_some() && hits.iter().any(|hit| hit.normal1.x < -0.5) {
-                commands.entity(entity).insert(TouchingWall::Right);
+                commands
+                    .entity(entity)
+                    .insert(TouchingWall(WallSide::Right));
             }
         }
     }
 }
+
+fn update_ledge_grab(
+    mut commands: Commands,
+    controllers: Query<
+        (Entity, &Children, &IsGrounded, Option<&TouchingWall>),
+        (With<CharacterController>, Without<Hanging>),
+    >,
+    ledge_probes: Query<(
+        &ShapeHits,
+        Option<&LedgeProbeLeft>,
+        Option<&LedgeProbeRight>,
+    )>,
+) {
+    for (entity, children, is_grounded, touching_wall) in &controllers {
+        if is_grounded.0 {
+            continue;
+        }
+        let Some(touching_wall) = touching_wall else {
+            continue;
+        };
+        for child in children.iter() {
+            let Ok((hits, left_ledge, right_ledge)) = ledge_probes.get(child) else {
+                continue;
+            };
+
+            // Which side is this probe? Skip if it's not the side the player
+            // is actually touching.
+            let probe_side = if left_ledge.is_some() {
+                WallSide::Left
+            } else if right_ledge.is_some() {
+                WallSide::Right
+            } else {
+                continue;
+            };
+            if probe_side != touching_wall.0 {
+                continue;
+            }
+
+            let Some(hit) = hits.iter().next() else {
+                continue;
+            };
+
+            println!("ledge grab on {:?} at {:?}", touching_wall.0, hit.point2);
+            commands.entity(entity).insert(Hanging {
+                side: touching_wall.0,
+                lip_world_pos: hit.point2,
+            });
+            break;
+        }
+    }
+}
+
 fn movement(
     time: Res<Time>,
     mut movement_reader: MessageReader<MovementAction>,
@@ -366,10 +478,7 @@ fn movement(
                 continue;
             }
             linear_velocity.y = jump_impulse.0;
-            linear_velocity.x = match wall_dir {
-                TouchingWall::Right => -jump_impulse.0,
-                TouchingWall::Left => jump_impulse.0,
-            };
+            linear_velocity.x = wall_dir.0.direction() * jump_impulse.0;
             jump_buffer.0 = 0.0;
         } else {
             jump_buffer.0 = (jump_buffer.0 - delta_time).max(0.0);
