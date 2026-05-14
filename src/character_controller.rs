@@ -8,10 +8,12 @@ impl Plugin for CharacterControllerPlugin {
         app.add_message::<MovementAction>().add_systems(
             Update,
             (
+                setup_casters,
                 reset_is_moving,
                 keyboard_input,
                 gamepad_input,
                 update_grounded,
+                update_wall_contact,
                 movement,
                 apply_movement_damping,
             )
@@ -30,6 +32,9 @@ pub enum MovementAction {
 pub struct IsMoving(bool);
 
 #[derive(Component)]
+pub struct IsGrounded(bool);
+
+#[derive(Component)]
 pub struct CharacterController;
 
 #[derive(Component)]
@@ -39,31 +44,40 @@ pub struct Grounded;
 #[derive(Component)]
 pub struct MovementAcceleration(Scalar);
 
-/// Damping factor used for slowing down movement
 #[derive(Component)]
 pub struct MovementDampingFactor(Scalar);
 
 #[derive(Component)]
 pub struct JumpImpulse(Scalar);
 
-/// Max angle a slope can have for char controller
-/// to be able to climb and jump. If the slope is steeper than this angle,
-/// the character will slide down.
 #[derive(Component)]
 pub struct MaxSlopeAngle(Scalar);
 
-/// Bundle that contains components needed for a basic kinematic character controller
+// Marker components for caster child entities
+#[derive(Component)]
+pub struct GroundCaster;
+
+#[derive(Component)]
+pub struct WallCasterLeft;
+
+#[derive(Component)]
+pub struct WallCasterRight;
+
+#[derive(Component)]
+pub enum TouchingWall {
+    Left,
+    Right,
+}
+
 #[derive(Bundle)]
 pub struct CharacterControllerBundle {
     character_controller: CharacterController,
     body: RigidBody,
     collider: Collider,
-    ground_caster: ShapeCaster,
-    locked_axes: LockedAxes, //TODO: check what this is for
+    locked_axes: LockedAxes,
     movement: MovementBundle,
 }
 
-/// Bundle that contains components for character movement
 #[derive(Bundle)]
 pub struct MovementBundle {
     acceleration: MovementAcceleration,
@@ -71,6 +85,7 @@ pub struct MovementBundle {
     jump_impulse: JumpImpulse,
     max_slope_angle: MaxSlopeAngle,
     is_moving: IsMoving,
+    is_grounded: IsGrounded,
 }
 
 impl MovementBundle {
@@ -86,6 +101,7 @@ impl MovementBundle {
             jump_impulse: JumpImpulse(jump_impulse),
             max_slope_angle: MaxSlopeAngle(max_slope_angle),
             is_moving: IsMoving(false),
+            is_grounded: IsGrounded(true),
         }
     }
 }
@@ -98,23 +114,10 @@ impl Default for MovementBundle {
 
 impl CharacterControllerBundle {
     pub fn new(collider: Collider) -> Self {
-        // Create shape caster as a slightly smaller version of collider
-        let mut caster_shape = collider.clone();
-        caster_shape.set_scale(Vector::ONE * 0.99, 10);
-
-        let aabb = caster_shape.shape().compute_local_aabb();
-        let half_height = aabb.half_extents().y;
         Self {
             character_controller: CharacterController,
             body: RigidBody::Dynamic,
             collider,
-            ground_caster: ShapeCaster::new(
-                caster_shape,
-                Vector::new(0.0, -half_height),
-                0.0,
-                Dir2::NEG_Y,
-            )
-            .with_max_distance(0.2),
             locked_axes: LockedAxes::ROTATION_LOCKED,
             movement: MovementBundle::default(),
         }
@@ -132,20 +135,68 @@ impl CharacterControllerBundle {
     }
 }
 
-/// Sends [`MovementAction`] events based on keyboard input.
+/// Spawns caster child entities for any newly added CharacterController.
+fn setup_casters(
+    mut commands: Commands,
+    controllers: Query<(Entity, &Collider), Added<CharacterController>>,
+) {
+    for (entity, collider) in &controllers {
+        let aabb = collider.shape().compute_local_aabb();
+        let half_height = aabb.half_extents().y;
+        let half_width = aabb.half_extents().x;
+
+        commands.entity(entity).with_children(|parent| {
+            // Ground caster — thin rectangle at feet, cast downward
+            parent.spawn((
+                ShapeCaster::new(
+                    Collider::rectangle(half_width * 1.8, 4.0),
+                    Vector::new(0.0, -half_height),
+                    0.0,
+                    Dir2::NEG_Y,
+                )
+                .with_max_distance(0.2),
+                GroundCaster,
+                Transform::default(),
+            ));
+
+            // Left wall caster — tall thin rectangle at left side, cast left
+            parent.spawn((
+                ShapeCaster::new(
+                    Collider::rectangle(3.0, half_height * 1.2),
+                    Vector::new(-half_width, 0.3),
+                    0.0,
+                    Dir2::NEG_X,
+                )
+                .with_max_distance(0.2),
+                WallCasterLeft,
+                Transform::default(),
+            ));
+
+            // Right wall caster — tall thin rectangle at right side, cast right
+            parent.spawn((
+                ShapeCaster::new(
+                    Collider::rectangle(3.0, half_height * 1.2),
+                    Vector::new(half_width, 0.3),
+                    0.0,
+                    Dir2::X,
+                )
+                .with_max_distance(0.2),
+                WallCasterRight,
+                Transform::default(),
+            ));
+        });
+    }
+}
+
 fn keyboard_input(
     mut movement_writer: MessageWriter<MovementAction>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
 ) {
-    let up = keyboard_input.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]);
-    let down = keyboard_input.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
     let left = keyboard_input.any_pressed([KeyCode::KeyA, KeyCode::ArrowLeft]);
     let right = keyboard_input.any_pressed([KeyCode::KeyD, KeyCode::ArrowRight]);
 
     let horizontal = right as i8 - left as i8;
-    let vertical = up as i8 - down as i8;
-
-    let direction = Vector2::new(horizontal as Scalar, vertical as Scalar).clamp_length_max(1.0);
+    let direction = Vector2::new(horizontal as Scalar, 0.0);
 
     if direction != Vector2::ZERO {
         movement_writer.write(MovementAction::Move(direction));
@@ -156,16 +207,13 @@ fn keyboard_input(
     }
 }
 
-/// Sends [`MovementAction`] events based on gamepad input.
 fn gamepad_input(mut movement_writer: MessageWriter<MovementAction>, gamepads: Query<&Gamepad>) {
     for gamepad in gamepads.iter() {
-        if let (Some(x), Some(y)) = (
-            gamepad.get(GamepadAxis::LeftStickX),
-            gamepad.get(GamepadAxis::LeftStickY),
-        ) {
-            movement_writer.write(MovementAction::Move(
-                Vector2::new(x as Scalar, y as Scalar).clamp_length_max(1.0),
-            ));
+        if let Some(x) = gamepad.get(GamepadAxis::LeftStickX) {
+            let direction = Vector2::new(x as Scalar, 0.0).clamp_length_max(1.0);
+            if direction != Vector2::ZERO {
+                movement_writer.write(MovementAction::Move(direction));
+            }
         }
 
         if gamepad.just_pressed(GamepadButton::South) {
@@ -174,26 +222,36 @@ fn gamepad_input(mut movement_writer: MessageWriter<MovementAction>, gamepads: Q
     }
 }
 
-/// Updates the ['Grounded'] status for character controller
+/// Updates Grounded by reading the ground caster child's ShapeHits.
 fn update_grounded(
     mut commands: Commands,
-    mut query: Query<
-        (Entity, &ShapeHits, &Rotation, Option<&MaxSlopeAngle>),
+    mut controllers: Query<
+        (
+            Entity,
+            &Children,
+            Option<&MaxSlopeAngle>,
+            &Rotation,
+            &mut IsGrounded,
+        ),
         With<CharacterController>,
     >,
+    ground_casters: Query<&ShapeHits, With<GroundCaster>>,
 ) {
-    for (entity, hits, rotation, max_slope_angle) in &mut query {
-        // The character is grounded if the shape caster has a hit with a normal
-        // that isn't to steep
-        let is_grounded = hits.iter().any(|hit| {
-            if let Some(angle) = max_slope_angle {
-                (rotation * -hit.normal2).angle_between(Vector::Y).abs() <= angle.0
-            } else {
-                true
-            }
+    for (entity, children, max_slope_angle, rotation, mut is_grounded) in &mut controllers {
+        is_grounded.0 = children.iter().any(|child| {
+            let Ok(hits) = ground_casters.get(child) else {
+                return false;
+            };
+            hits.iter().any(|hit| {
+                if let Some(angle) = max_slope_angle {
+                    (rotation * hit.normal2).angle_to(Vector::Y).abs() <= angle.0
+                } else {
+                    true
+                }
+            })
         });
 
-        if is_grounded {
+        if is_grounded.0 {
             commands.entity(entity).insert(Grounded);
         } else {
             commands.entity(entity).remove::<Grounded>();
@@ -201,7 +259,34 @@ fn update_grounded(
     }
 }
 
-/// Responds to [`MovementAction`] events and moves character controllers accordingly.
+fn update_wall_contact(
+    mut commands: Commands,
+    controllers: Query<(Entity, &Children), With<CharacterController>>,
+    wall_casters: Query<(
+        &ShapeHits,
+        Option<&WallCasterLeft>,
+        Option<&WallCasterRight>,
+    )>,
+) {
+    for (entity, children) in &controllers {
+        commands.entity(entity).remove::<TouchingWall>();
+        for child in children.iter() {
+            let Ok((hits, left, right)) = wall_casters.get(child) else {
+                continue;
+            };
+
+            if left.is_some() && hits.iter().count() > 0 {
+                //touching wall left
+                commands.entity(entity).insert(TouchingWall::Left);
+            }
+
+            if right.is_some() && hits.iter().count() > 0 {
+                //touching wall right
+                commands.entity(entity).insert(TouchingWall::Right);
+            }
+        }
+    }
+}
 fn movement(
     time: Res<Time>,
     mut movement_reader: MessageReader<MovementAction>,
@@ -209,27 +294,50 @@ fn movement(
         &MovementAcceleration,
         &JumpImpulse,
         &mut LinearVelocity,
-        Has<Grounded>,
+        &IsGrounded,
         &mut IsMoving,
+        Option<&TouchingWall>,
     )>,
 ) {
-    // Precision is adjusted so that the example works with
-    // both the f32 and f64 features.
     let delta_time = time.delta_secs_f64().adjust_precision();
 
     for event in movement_reader.read() {
-        for (movement_acceleration, jump_impulse, mut linear_velocity, is_grouded, mut is_moving) in
-            &mut controllers
+        for (
+            movement_acceleration,
+            jump_impulse,
+            mut linear_velocity,
+            is_grounded,
+            mut is_moving,
+            touching_wall,
+        ) in &mut controllers
         {
             match event {
                 MovementAction::Move(direction) => {
                     is_moving.0 = true;
                     linear_velocity.x += direction.x * movement_acceleration.0 * delta_time;
+
+                    if !is_grounded.0 && touching_wall.is_some() {
+                        linear_velocity.y = linear_velocity.y.max(-50.0);
+                    }
                 }
                 MovementAction::Jump => {
-                    println!("jump pressed, grounded: {}", is_grouded);
-                    if is_grouded {
+                    println!(
+                        "jump: grounded={} vel_y={:.1} wall={}",
+                        is_grounded.0,
+                        linear_velocity.y,
+                        touching_wall.is_some(),
+                    );
+                    if is_grounded.0 {
                         linear_velocity.y = jump_impulse.0;
+                    } else if let Some(wall_dir) = touching_wall {
+                        if linear_velocity.y > 0.0 {
+                            return;
+                        }
+                        linear_velocity.y = jump_impulse.0;
+                        linear_velocity.x = match wall_dir {
+                            TouchingWall::Left => jump_impulse.0,
+                            TouchingWall::Right => -jump_impulse.0,
+                        }
                     }
                 }
             }
@@ -237,7 +345,6 @@ fn movement(
     }
 }
 
-/// Slows down movement in the X plane.
 fn apply_movement_damping(
     time: Res<Time>,
     mut query: Query<(&MovementDampingFactor, &mut LinearVelocity, &IsMoving)>,

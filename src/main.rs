@@ -11,6 +11,7 @@ fn main() {
         .add_plugins((
             DefaultPlugins,
             PhysicsPlugins::default(),
+            PhysicsDebugPlugin::default(),
             CharacterControllerPlugin,
         ))
         .add_systems(Startup, (setup_camera, setup_world, setup_player))
@@ -71,11 +72,11 @@ fn setup_player(mut commands: Commands) {
         CharacterControllerBundle::new(Collider::capsule(10.0, 60.0)).with_movement(
             350.0,
             0.01,
-            150.0,
+            300.0,
             (30.0 as Scalar).to_radians(),
         ),
         Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
         Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
-        GravityScale(9.8),
+        GravityScale(30.0),
     ));
 }
