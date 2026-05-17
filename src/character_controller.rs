@@ -12,6 +12,7 @@ const HANG_COOLDOWN_TIME: Scalar = 0.15;
 const MANTLE_HORIZONTAL_FACTOR: Scalar = 0.3;
 // Horizontal nudge when releasing away from a wall.
 const RELEASE_NUDGE: Scalar = 100.0;
+const AIR_FRICTION: Scalar = 0.4;
 
 pub struct CharacterControllerPlugin;
 
@@ -468,7 +469,8 @@ fn update_ledge_exit(
             // Mantle: vertical jump + horizontal nudge onto the platform.
             // direction() points away from the wall; we want toward, so negate.
             linear_velocity.y = jump_impulse.0;
-            linear_velocity.x = -hanging.side.direction() * jump_impulse.0 * MANTLE_HORIZONTAL_FACTOR;
+            linear_velocity.x =
+                -hanging.side.direction() * jump_impulse.0 * MANTLE_HORIZONTAL_FACTOR;
             jump_buffer.0 = 0.0;
             exited = true;
         } else if down {
@@ -490,7 +492,9 @@ fn update_ledge_exit(
         if exited {
             gravity_scale.0 = hanging.prev_gravity_scale;
             commands.entity(entity).remove::<Hanging>();
-            commands.entity(entity).insert(HangCooldown(HANG_COOLDOWN_TIME));
+            commands
+                .entity(entity)
+                .insert(HangCooldown(HANG_COOLDOWN_TIME));
         }
     }
 }
@@ -580,6 +584,9 @@ fn movement(
                     is_moving.0 = true;
                     if is_grounded.0 {
                         linear_velocity.x += direction.x * movement_acceleration.0 * delta_time;
+                    } else {
+                        linear_velocity.x +=
+                            direction.x * movement_acceleration.0 * delta_time * AIR_FRICTION;
                     }
                     if !is_grounded.0 && touching_wall.is_some() {
                         linear_velocity.y = linear_velocity.y.max(-50.0);

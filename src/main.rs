@@ -15,11 +15,49 @@ fn main() {
             CharacterControllerPlugin,
         ))
         .add_systems(Startup, (setup_camera, setup_world, setup_player))
+        .add_systems(Update, camera_follow)
         .run();
 }
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d::default());
+}
+
+/// Smoothed follow camera with velocity-based look-ahead.
+/// - Reads avian's `Position` (authoritative; current within the frame even
+///   before the Transform sync runs).
+/// - Targets `player_pos + velocity * LOOKAHEAD_TIME` so the camera leads
+///   the player slightly in the direction of motion, giving them sight of
+///   what's coming.
+/// - Smooths toward the target with a frame-rate-independent exponential
+///   (`1 - exp(-rate * dt)`) so the same `FOLLOW_RATE` feels identical at
+///   60Hz and 144Hz.
+fn camera_follow(
+    time: Res<Time>,
+    player: Query<(&Position, &LinearVelocity), With<CharacterController>>,
+    mut camera: Query<&mut Transform, (With<Camera2d>, Without<CharacterController>)>,
+) {
+    // How far ahead of the player to aim, in seconds of projected motion.
+    const LOOKAHEAD_TIME: f32 = 0.15;
+    // Higher = camera catches up faster. ~6 is "snappy but smooth".
+    const FOLLOW_RATE: f32 = 6.0;
+
+    let Ok((player_pos, velocity)) = player.single() else {
+        return;
+    };
+    let Ok(mut cam_t) = camera.single_mut() else {
+        return;
+    };
+
+    let look_ahead = velocity.0 * LOOKAHEAD_TIME;
+    let target = player_pos.0 + look_ahead;
+
+    let alpha = 1.0 - (-FOLLOW_RATE * time.delta_secs()).exp();
+    let current = cam_t.translation.truncate();
+    let new_pos = current.lerp(target, alpha);
+
+    cam_t.translation.x = new_pos.x;
+    cam_t.translation.y = new_pos.y;
 }
 
 fn platform(commands: &mut Commands, x: f32, y: f32, w: f32, h: f32) {
