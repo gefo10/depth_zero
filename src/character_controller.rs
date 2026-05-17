@@ -2,6 +2,16 @@ use avian2d::{math::*, prelude::*};
 use bevy::{ecs::entity, math::VectorSpace, prelude::*};
 
 const JUMP_BUFFER_TIME: Scalar = 0.12;
+// Tuning: how far the "hand" reaches above the player's body top when hanging.
+// 0 = body top flush with lip. Positive = fingers curl over.
+const HAND_REACH: Scalar = 4.0;
+// Time after releasing a ledge during which re-grabbing is suppressed,
+// so the player doesn't instantly re-grab the same lip while falling past it.
+const HANG_COOLDOWN_TIME: Scalar = 0.15;
+// How much horizontal velocity to apply when mantling (as a fraction of jump_impulse).
+const MANTLE_HORIZONTAL_FACTOR: Scalar = 0.3;
+// Horizontal nudge when releasing away from a wall.
+const RELEASE_NUDGE: Scalar = 100.0;
 
 pub struct CharacterControllerPlugin;
 
@@ -16,7 +26,10 @@ impl Plugin for CharacterControllerPlugin {
                 gamepad_input,
                 update_grounded,
                 update_wall_contact,
+                tick_hang_cooldown,
                 update_ledge_grab,
+                update_ledge_exit,
+                hang_active,
                 movement,
                 apply_movement_damping,
             )
@@ -98,7 +111,11 @@ pub struct TouchingWall(pub WallSide);
 pub struct Hanging {
     pub side: WallSide,
     pub lip_world_pos: Vector,
+    pub prev_gravity_scale: Scalar,
 }
+
+#[derive(Component)]
+pub struct HangCooldown(pub Scalar);
 
 #[derive(Bundle)]
 pub struct CharacterControllerBundle {
@@ -368,8 +385,18 @@ fn update_wall_contact(
 fn update_ledge_grab(
     mut commands: Commands,
     controllers: Query<
-        (Entity, &Children, &IsGrounded, Option<&TouchingWall>),
-        (With<CharacterController>, Without<Hanging>),
+        (
+            Entity,
+            &Children,
+            &IsGrounded,
+            Option<&TouchingWall>,
+            &GravityScale,
+        ),
+        (
+            With<CharacterController>,
+            Without<Hanging>,
+            Without<HangCooldown>,
+        ),
     >,
     ledge_probes: Query<(
         &ShapeHits,
@@ -377,7 +404,7 @@ fn update_ledge_grab(
         Option<&LedgeProbeRight>,
     )>,
 ) {
-    for (entity, children, is_grounded, touching_wall) in &controllers {
+    for (entity, children, is_grounded, touching_wall, gravity_scale) in &controllers {
         if is_grounded.0 {
             continue;
         }
@@ -406,16 +433,115 @@ fn update_ledge_grab(
                 continue;
             };
 
-            println!("ledge grab on {:?} at {:?}", touching_wall.0, hit.point2);
             commands.entity(entity).insert(Hanging {
                 side: touching_wall.0,
                 lip_world_pos: hit.point2,
+                prev_gravity_scale: gravity_scale.0,
             });
             break;
         }
     }
 }
 
+fn update_ledge_exit(
+    mut commands: Commands,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut hangers: Query<(
+        Entity,
+        &Hanging,
+        &mut JumpBuffer,
+        &JumpImpulse,
+        &mut LinearVelocity,
+        &mut GravityScale,
+    )>,
+) {
+    let down = keyboard.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
+    let left = keyboard.any_pressed([KeyCode::KeyA, KeyCode::ArrowLeft]);
+    let right = keyboard.any_pressed([KeyCode::KeyD, KeyCode::ArrowRight]);
+
+    for (entity, hanging, mut jump_buffer, jump_impulse, mut linear_velocity, mut gravity_scale) in
+        &mut hangers
+    {
+        let mut exited = false;
+
+        if jump_buffer.0 > 0.0 {
+            // Mantle: vertical jump + horizontal nudge onto the platform.
+            // direction() points away from the wall; we want toward, so negate.
+            linear_velocity.y = jump_impulse.0;
+            linear_velocity.x = -hanging.side.direction() * jump_impulse.0 * MANTLE_HORIZONTAL_FACTOR;
+            jump_buffer.0 = 0.0;
+            exited = true;
+        } else if down {
+            // Drop straight down.
+            linear_velocity.0 = Vector::ZERO;
+            exited = true;
+        } else {
+            // Press direction *away* from the wall to release with a small nudge.
+            let pressed_away = match hanging.side {
+                WallSide::Left => right,
+                WallSide::Right => left,
+            };
+            if pressed_away {
+                linear_velocity.x = hanging.side.direction() * RELEASE_NUDGE;
+                exited = true;
+            }
+        }
+
+        if exited {
+            gravity_scale.0 = hanging.prev_gravity_scale;
+            commands.entity(entity).remove::<Hanging>();
+            commands.entity(entity).insert(HangCooldown(HANG_COOLDOWN_TIME));
+        }
+    }
+}
+
+fn tick_hang_cooldown(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut cooldowns: Query<(Entity, &mut HangCooldown)>,
+) {
+    let delta = time.delta_secs_f64().adjust_precision();
+    for (entity, mut cooldown) in &mut cooldowns {
+        cooldown.0 -= delta;
+        if cooldown.0 <= 0.0 {
+            commands.entity(entity).remove::<HangCooldown>();
+        }
+    }
+}
+
+fn hang_active(
+    mut hangers: Query<
+        (
+            &Hanging,
+            &mut LinearVelocity,
+            &mut GravityScale,
+            &mut Position,
+            &Collider,
+        ),
+        With<CharacterController>,
+    >,
+) {
+    for (hanging, mut linear_velocity, mut gravity_scale, mut position, collider) in &mut hangers {
+        // Freeze motion — leftover velocity from the fall would carry frame
+        // to frame and fight the snap.
+        linear_velocity.0 = Vector::ZERO;
+
+        // Disable gravity by zeroing the per-entity scalar. The body still
+        // exists in the physics world; it just accumulates no gravitational
+        // force this step.
+        gravity_scale.0 = 0.0;
+
+        // Snap player so the top corner on the wall side meets the lip.
+        let aabb = collider.shape().compute_local_aabb();
+        let half_w = aabb.half_extents().x;
+        let half_h = aabb.half_extents().y;
+
+        position.0 = Vector::new(
+            hanging.lip_world_pos.x + hanging.side.direction() * half_w,
+            hanging.lip_world_pos.y - half_h + HAND_REACH,
+        );
+    }
+}
 fn movement(
     time: Res<Time>,
     mut movement_reader: MessageReader<MovementAction>,
@@ -427,6 +553,7 @@ fn movement(
         &IsGrounded,
         &mut IsMoving,
         Option<&TouchingWall>,
+        Option<&Hanging>,
     )>,
 ) {
     let delta_time = time.delta_secs_f64().adjust_precision();
@@ -440,10 +567,16 @@ fn movement(
             is_grounded,
             mut is_moving,
             touching_wall,
+            hanging,
         ) in &mut controllers
         {
             match event {
                 MovementAction::Move(direction) => {
+                    // While hanging, ignore Move input — hang_active is
+                    // pinning the player and any velocity here would jitter.
+                    if hanging.is_some() {
+                        continue;
+                    }
                     is_moving.0 = true;
                     if is_grounded.0 {
                         linear_velocity.x += direction.x * movement_acceleration.0 * delta_time;
@@ -464,7 +597,7 @@ fn movement(
         }
     }
 
-    for (_, jump_impulse, mut jump_buffer, mut linear_velocity, is_grounded, _, touching_wall) in
+    for (_, jump_impulse, mut jump_buffer, mut linear_velocity, is_grounded, _, touching_wall, _) in
         &mut controllers
     {
         if jump_buffer.0 <= 0.0 {
