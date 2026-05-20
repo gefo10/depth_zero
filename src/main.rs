@@ -1,9 +1,12 @@
+mod character_animator;
 mod character_controller;
 
 use avian2d::{math::*, prelude::*};
 use bevy::prelude::*;
+use character_animator::*;
 use character_controller::*;
 
+use crate::character_animator::CharacterAnimatorPlugin;
 use crate::character_controller::CharacterControllerPlugin;
 
 fn main() {
@@ -13,6 +16,7 @@ fn main() {
             PhysicsPlugins::default(),
             PhysicsDebugPlugin::default(),
             CharacterControllerPlugin,
+            CharacterAnimatorPlugin,
         ))
         .add_systems(Startup, (setup_camera, setup_world, setup_player))
         .add_systems(Update, camera_follow)
@@ -38,9 +42,12 @@ fn camera_follow(
     mut camera: Query<&mut Transform, (With<Camera2d>, Without<CharacterController>)>,
 ) {
     // How far ahead of the player to aim, in seconds of projected motion.
-    const LOOKAHEAD_TIME: f32 = 0.15;
-    // Higher = camera catches up faster. ~6 is "snappy but smooth".
-    const FOLLOW_RATE: f32 = 6.0;
+    // Larger = more anticipation, camera reveals more of what's coming.
+    const LOOKAHEAD_TIME: f32 = 0.25;
+    // Exponential catch-up rate. Lower = visibly laggy, higher = tight.
+    // 2–3: cinematic, camera clearly trails. 5–8: snappy but still smooth.
+    // 12+: nearly indistinguishable from snap-follow.
+    const FOLLOW_RATE: f32 = 3.0;
 
     let Ok((player_pos, velocity)) = player.single() else {
         return;
@@ -87,8 +94,8 @@ fn setup_world(mut commands: Commands) {
     // Three small islands with progressively wider gaps. Reveals the speed
     // at which a stand-still jump becomes uncrossable vs. a running jump.
     platform(c, -130.0, -250.0, 60.0, 20.0); // gap = 40
-    platform(c,   10.0, -250.0, 80.0, 20.0); // gap = 70
-    platform(c,  170.0, -250.0, 80.0, 20.0); // gap = 80
+    platform(c, 10.0, -250.0, 80.0, 20.0); // gap = 70
+    platform(c, 170.0, -250.0, 80.0, 20.0); // gap = 80
 
     // === WALL JUMP TEST ===
     // A single tall wall. Slide down it, push off it. Add a facing wall
@@ -98,7 +105,7 @@ fn setup_world(mut commands: Commands) {
     // === LEDGE-GRAB TOWER ===
     // Staggered platforms with exposed edges. Each lip should be reachable
     // from the wall below + a jump, then grabbed and mantled.
-    platform(c, 340.0,  60.0, 80.0, 16.0); // low ledge (top at y=68)
+    platform(c, 340.0, 60.0, 80.0, 16.0); // low ledge (top at y=68)
     platform(c, 450.0, 160.0, 80.0, 16.0); // mid ledge
     platform(c, 560.0, 260.0, 80.0, 16.0); // high ledge
 
@@ -130,57 +137,99 @@ fn setup_player(mut commands: Commands) {
         ))
         .with_children(|parent| {
             // Head
+            let head_pos = Vec2::new(0.0, 30.0);
             parent.spawn((
-                Transform::from_xyz(0.0, 30.0, 1.0),
+                Transform::from_xyz(head_pos.x, head_pos.y, 1.0),
                 Sprite {
                     color: body_color,
                     custom_size: Some(Vec2::new(14.0, 14.0)),
                     ..default()
                 },
+                Head,
+                RestPose {
+                    position: head_pos,
+                    scale: Vec2::ONE,
+                    rotation: 0.0,
+                },
             ));
             // Torso
+            let torso_pos = Vec2::new(0.0, 7.0);
             parent.spawn((
-                Transform::from_xyz(0.0, 7.0, 1.0),
+                Transform::from_xyz(torso_pos.x, torso_pos.y, 1.0),
                 Sprite {
                     color: body_color,
                     custom_size: Some(Vec2::new(14.0, 28.0)),
                     ..default()
                 },
+                Torso,
+                RestPose {
+                    position: torso_pos,
+                    scale: Vec2::ONE,
+                    rotation: 0.0,
+                },
             ));
             // Left arm
+            let left_arm_pos = Vec2::new(-10.0, 7.0);
             parent.spawn((
-                Transform::from_xyz(-10.0, 7.0, 1.0),
+                Transform::from_xyz(left_arm_pos.x, left_arm_pos.y, 1.0),
                 Sprite {
                     color: body_color,
                     custom_size: Some(Vec2::new(5.0, 28.0)),
                     ..default()
+                },
+                LeftArm,
+                RestPose {
+                    position: left_arm_pos,
+                    scale: Vec2::ONE,
+                    rotation: 0.0,
                 },
             ));
             // Right arm
+            let right_arm_pos = Vec2::new(10.0, 7.0);
             parent.spawn((
-                Transform::from_xyz(10.0, 7.0, 1.0),
+                Transform::from_xyz(right_arm_pos.x, right_arm_pos.y, 1.0),
                 Sprite {
                     color: body_color,
                     custom_size: Some(Vec2::new(5.0, 28.0)),
                     ..default()
                 },
+                RightArm,
+                RestPose {
+                    position: right_arm_pos,
+                    scale: Vec2::ONE,
+                    rotation: 0.0,
+                },
             ));
             // Left leg
+            let left_leg_pos = Vec2::new(-4.0, -25.0);
             parent.spawn((
-                Transform::from_xyz(-4.0, -25.0, 1.0),
+                Transform::from_xyz(left_leg_pos.x, left_leg_pos.y, 1.0),
                 Sprite {
                     color: body_color,
                     custom_size: Some(Vec2::new(6.0, 30.0)),
                     ..default()
                 },
+                LeftLeg,
+                RestPose {
+                    position: left_leg_pos,
+                    scale: Vec2::ONE,
+                    rotation: 0.0,
+                },
             ));
             // Right leg
+            let right_leg_pos = Vec2::new(4.0, -25.0);
             parent.spawn((
-                Transform::from_xyz(4.0, -25.0, 1.0),
+                Transform::from_xyz(right_leg_pos.x, right_leg_pos.y, 1.0),
                 Sprite {
                     color: body_color,
                     custom_size: Some(Vec2::new(6.0, 30.0)),
                     ..default()
+                },
+                RightLeg,
+                RestPose {
+                    position: right_leg_pos,
+                    scale: Vec2::ONE,
+                    rotation: 0.0,
                 },
             ));
         });
